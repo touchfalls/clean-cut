@@ -14,6 +14,8 @@
   button { width: 100%; padding: 7px; margin-top: 6px; border: 0; border-radius: 4px; background: #3a3a3a; color: var(--fg); font-size: 12px; cursor: pointer; }
   button.primary { background: var(--accent); color: #fff; }
   button:disabled { opacity: .4; cursor: default; }
+  .pair { display: flex; gap: 4px; }
+  button.small { width: auto; margin: 0; padding: 3px 8px; }
   #status { margin-top: 10px; white-space: pre-wrap; min-height: 2em; }
   #status.error { color: var(--err); }
   .hint { color: var(--muted); font-size: 11px; }
@@ -27,7 +29,7 @@
   </fieldset>
   <fieldset>
     <legend data-t="settings"></legend>
-    <div class="row"><label for="db" data-t="threshold"></label><input id="db" type="number" step="1" max="0" min="-90"></div>
+    <div class="row"><label for="db" data-t="threshold"></label><span class="pair"><button id="auto" class="small" data-t="auto"></button><input id="db" type="number" step="1" max="0" min="-90"></span></div>
     <div class="row"><label for="min" data-t="minPause"></label><input id="min" type="number" step="0.1" min="0.1"></div>
     <div class="row"><label for="pad" data-t="padding"></label><input id="pad" type="number" step="10" min="0"></div>
   </fieldset>

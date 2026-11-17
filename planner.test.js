@@ -1,6 +1,22 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { parseSilences, planCuts, totalFrames } = require('./planner.js');
+const { parseSilences, planCuts, totalFrames, suggestThreshold } = require('./planner.js');
+
+// Mono s16le: `parts` = [[seconds, amplitude 0..1, kind]] where kind 'sine' or 'noise'.
+function pcm(parts, rate = 8000) {
+  const total = parts.reduce((n, p) => n + Math.round(p[0] * rate), 0);
+  const buf = Buffer.alloc(total * 2);
+  let i = 0, seed = 1;
+  for (const [sec, amp, kind] of parts) {
+    for (let k = 0; k < Math.round(sec * rate); k++, i++) {
+      seed = (seed * 16807) % 2147483647;
+      const x = kind === 'sine' ? Math.sin(2 * Math.PI * 220 * k / rate) : (seed / 2147483647) * 2 - 1;
+      buf.writeInt16LE(Math.round(x * amp * 32767), i * 2);
+    }
+  }
+  return buf;
+}
+const dB = (d) => Math.pow(10, d / 20);
 
 const STDERR = `
 [silencedetect @ 0x600] silence_start: 0
@@ -48,4 +64,19 @@ test('float noise does not lose a frame', () => {
 test('non-integer fps', () => {
   const [c] = planCuts([{ start: 10, end: 12 }], { padding: 0, fps: 30000 / 1001 });
   assert.deepStrictEqual(c, { startFrame: 300, endFrame: 359 });
+});
+
+test('threshold lands between mic hiss and speech', () => {
+  // 60% hiss at about -60 dB, 40% speech at about -20 dB
+  const t = suggestThreshold(pcm([[6, dB(-55), 'noise'], [4, dB(-17), 'sine']]), 8000);
+  assert.ok(t > -55 && t < -25, `got ${t}`);
+});
+
+test('noise-gated audio (digital silence) gives a low but clamped threshold', () => {
+  const t = suggestThreshold(pcm([[7, 0, 'noise'], [3, dB(-17), 'sine']]), 8000);
+  assert.ok(t >= -70 && t < -40, `got ${t}`);
+});
+
+test('empty audio -> null', () => {
+  assert.strictEqual(suggestThreshold(Buffer.alloc(0), 8000), null);
 });

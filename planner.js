@@ -36,6 +36,26 @@ function totalFrames(cuts) {
   return n;
 }
 
+// Suggests a silence threshold in dB from mono s16le PCM (a Buffer).
+// Peak level of each 50 ms window -> noise floor = 10th percentile, speech = 95th percentile
+// (high, because gaming chat can be mostly silence); threshold sits 35% of the way up from the floor.
+function suggestThreshold(pcm, sampleRate) {
+  var win = Math.max(1, Math.round(sampleRate * 0.05));
+  var count = Math.floor(pcm.length / 2), levels = [];
+  for (var w = 0; w + win <= count; w += win) {
+    // Peak, not RMS: silencedetect compares every sample, so noise peaks decide what counts as silence.
+    var peak = 0;
+    for (var i = w; i < w + win; i++) { var v = Math.abs(pcm.readInt16LE(i * 2)); if (v > peak) peak = v; }
+    peak /= 32768;
+    levels.push(peak > 0 ? Math.max(-100, 20 * Math.log10(peak)) : -100);
+  }
+  if (!levels.length) return null;
+  levels.sort(function (a, b) { return a - b; });
+  var pick = function (p) { return levels[Math.min(levels.length - 1, Math.floor(p * levels.length))]; };
+  var floor = pick(0.10), speech = pick(0.95);
+  return Math.round(Math.min(-20, Math.max(-70, floor + 0.35 * (speech - floor))));
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { parseSilences: parseSilences, planCuts: planCuts, totalFrames: totalFrames };
+  module.exports = { parseSilences: parseSilences, planCuts: planCuts, totalFrames: totalFrames, suggestThreshold: suggestThreshold };
 }

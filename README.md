@@ -39,7 +39,7 @@ The script symlinks the folder into `~/Library/Application Support/Adobe/CEP/ext
 | Setting | Default | Meaning |
 |---|---|---|
 | Detect silence on | A1 + A3 | Tracks to listen to. A pause counts only when all of them are quiet. |
-| Threshold | −40 dB | Anything quieter than this counts as silence. Try −45…−50 if quiet words get cut. |
+| Threshold | −40 dB | Anything quieter than this counts as silence. Try −45…−50 if quiet words get cut. **Auto** measures the noise floor and speech level of the checked tracks, sets the threshold between them (−70…−20 dB), then runs the analysis. |
 | Min pause | 1 s | Shorter pauses are left alone. |
 | Padding | 200 ms | Space kept before and after speech so words aren't clipped. |
 
@@ -110,7 +110,7 @@ cd clean-cut && ./install.sh
 | Настройка | По умолчанию | Что значит |
 |---|---|---|
 | Искать тишину на | A1 + A3 | Какие дорожки слушать. Пауза засчитывается, только когда молчат все. |
-| Порог | −40 дБ | Всё тише считается тишиной. Если режутся тихие слова, попробуй −45…−50. |
+| Порог | −40 дБ | Всё тише считается тишиной. Если режутся тихие слова, попробуй −45…−50. Кнопка **Авто** измеряет уровень шума и речи на отмеченных дорожках, ставит порог между ними (−70…−20 дБ) и сразу делает анализ. |
 | Мин. пауза | 1 с | Паузы короче не трогаются. |
 | Отступ | 200 мс | Сколько «воздуха» оставить до и после речи. |
 

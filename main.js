@@ -8,6 +8,8 @@ var STRINGS = {
     listen: 'Detect silence on', listenHint: 'Silence = all checked tracks are quiet. All tracks get cut.',
     settings: 'Settings', threshold: 'Threshold, dB', minPause: 'Min pause, s', padding: 'Padding, ms',
     refresh: 'Refresh tracks', analyze: 'Analyze', cut: 'Cut silence',
+    auto: 'Auto', autoTitle: 'Measure the audio, pick a threshold and analyze',
+    measuring: 'Measuring levels…', suggested: 'Suggested threshold: {db} dB',
     exporting: 'Rendering audio…', detecting: 'Detecting silence…', cutting: 'Backing up and cutting…',
     found: 'Pauses found: {n}\nWill remove: {t} of {total}', none: 'No pauses found with these settings.',
     done: 'Done: {n} cuts, removed {t}.\nBackup: "{b}"', changed: 'Sequence changed — press Analyze again.',
@@ -24,6 +26,8 @@ var STRINGS = {
     listen: 'Искать тишину на', listenHint: 'Тишина — когда молчат все отмеченные дорожки. Режутся все дорожки.',
     settings: 'Настройки', threshold: 'Порог, дБ', minPause: 'Мин. пауза, с', padding: 'Отступ, мс',
     refresh: 'Обновить дорожки', analyze: 'Анализ', cut: 'Вырезать тишину',
+    auto: 'Авто', autoTitle: 'Измерить звук, подобрать порог и сделать анализ',
+    measuring: 'Измеряю уровни…', suggested: 'Подобран порог: {db} дБ',
     exporting: 'Рендер звука…', detecting: 'Поиск тишины…', cutting: 'Бэкап и вырезка…',
     found: 'Найдено пауз: {n}\nБудет вырезано: {t} из {total}', none: 'С такими настройками пауз не найдено.',
     done: 'Готово: {n} вырезов, убрано {t}.\nБэкап: «{b}»', changed: 'Секвенция изменилась — нажми «Анализ» ещё раз.',
@@ -112,7 +116,22 @@ function readSettings() {
   return s;
 }
 
-function analyze() {
+// Downmixes the rendered WAV to mono 8 kHz PCM and sets the threshold field from its levels.
+function measure(ffmpeg, wav, s) {
+  say(L.measuring);
+  return new Promise(function (resolve, reject) {
+    var args = ['-hide_banner', '-nostats', '-v', 'error', '-i', wav, '-ac', '1', '-ar', '8000', '-f', 's16le', '-'];
+    cp.execFile(ffmpeg, args, { encoding: 'buffer', maxBuffer: 512 * 1024 * 1024 }, function (err, out, stderr) {
+      if (err) return reject('ffmpeg: ' + String(stderr).slice(-300));
+      var db = suggestThreshold(out, 8000);
+      if (db === null) return reject('EXPORT_FAILED');
+      s.db = db; $('db').value = db; store.set('settings', s);
+      resolve();
+    });
+  });
+}
+
+function analyze(auto) {
   var ffmpeg = findFfmpeg();
   if (!ffmpeg) return Promise.resolve(sayError('NO_FFMPEG'));
   var keep = selectedTracks();
@@ -127,6 +146,8 @@ function analyze() {
     say(L.exporting);
     return host('cc_exportAnalysis(' + JSON.stringify(keep) + ',' + lit(wav) + ')');
   }).then(function () {
+    if (auto) return measure(ffmpeg, wav, s);
+  }).then(function () {
     say(L.detecting);
     return new Promise(function (resolve, reject) {
       var args = ['-hide_banner', '-nostats', '-i', wav, '-af', 'silencedetect=n=' + s.db + 'dB:d=' + s.min, '-f', 'null', '-'];
@@ -137,9 +158,10 @@ function analyze() {
   }).then(function (stderr) {
     cleanup();
     var cuts = planCuts(parseSilences(stderr, info.endSec), { padding: s.pad / 1000, fps: info.fps });
-    if (!cuts.length) return say(L.none);
+    if (!cuts.length) return say((auto ? fmt(L.suggested, { db: s.db }) + '\n' : '') + L.none);
     plan = { cuts: cuts, id: info.id, endSec: info.endSec };
-    say(fmt(L.found, { n: cuts.length, t: clock(totalFrames(cuts) / info.fps), total: clock(info.endSec) }));
+    say((auto ? fmt(L.suggested, { db: s.db }) + '\n' : '') +
+      fmt(L.found, { n: cuts.length, t: clock(totalFrames(cuts) / info.fps), total: clock(info.endSec) }));
     $('cut').disabled = false;
   }).catch(function (e) { cleanup(); sayError(e); });
 }
@@ -162,6 +184,7 @@ function cut() {
 }
 
 document.querySelectorAll('[data-t]').forEach(function (el) { el.textContent = L[el.getAttribute('data-t')]; });
+$('auto').title = L.autoTitle;
 var saved = store.get('settings', { db: -40, min: 1, pad: 200 });
 $('db').value = saved.db; $('min').value = saved.min; $('pad').value = saved.pad;
 ['db', 'min', 'pad'].forEach(function (id) { $(id).onchange = function () { plan = null; $('cut').disabled = true; }; });
@@ -169,12 +192,13 @@ $('db').value = saved.db; $('min').value = saved.min; $('pad').value = saved.pad
 // Each action disables the buttons while it runs, so a double click can't start two exports.
 function busy(fn) {
   return function () {
-    var btns = [$('refresh'), $('analyze')];
+    var btns = [$('refresh'), $('analyze'), $('auto')];
     btns.forEach(function (b) { b.disabled = true; });
     fn().then(function () { btns.forEach(function (b) { b.disabled = false; }); });
   };
 }
 $('refresh').onclick = busy(refresh);
-$('analyze').onclick = busy(analyze);
+$('analyze').onclick = busy(function () { return analyze(false); });
+$('auto').onclick = busy(function () { return analyze(true); });
 $('cut').onclick = busy(cut);
 refresh();
