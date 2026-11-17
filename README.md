@@ -2,17 +2,25 @@
 
 A free, open-source Adobe Premiere Pro panel that finds silence on the audio tracks you choose and cuts it from the whole timeline. Video and every audio track stay in sync.
 
-It was made for recordings of games played with friends over Discord, with three audio tracks: mic, game, Discord. Clean Cut listens only to the mic and Discord tracks, so a pause is removed when everyone is quiet, even if the game is still making noise.
+It was made for recordings of games played with friends over Discord, with three audio tracks: mic, game, Discord. Clean Cut listens to the mic and Discord tracks, each with its own threshold, so a pause is removed only when everyone is quiet. Loud game moments (explosions, cutscenes) inside a pause are kept.
 
 [Русская версия ниже](#по-русски)
 
 ## How it works
 
-1. Premiere renders the checked audio tracks of the active sequence to a temporary WAV. Every other track is muted for the render and unmuted afterwards.
-2. `ffmpeg silencedetect` finds stretches below the threshold that are longer than the minimum pause.
-3. Each pause is shrunk by the padding on both sides and snapped to whole frames.
-4. **Analyze** shows how many pauses were found and how much time will go.
-5. **Cut silence** first duplicates the sequence as a backup named "… (before cut)". Then it extracts each pause, right to left, on all tracks at once. After every cut it checks that the timeline shrank by exactly the expected length, and stops if it didn't.
+1. Each audio track gets a role: **Speech**, **Game** or **Ignore**. Premiere renders every Speech and Game track to its own temporary WAV, muting the others for the render.
+2. `ffmpeg silencedetect` finds quiet stretches on each track with that track's threshold.
+3. A pause is where every Speech track is quiet. Moments where a Game track is louder than its threshold, plus 0.5 s on each side, are taken out of the pauses.
+4. Pauses shorter than the minimum are dropped. A short sound between two pauses (a cough, a click) is joined into them.
+5. Each pause is shrunk by the padding on both sides and snapped to whole frames.
+6. **Analyze** shows how many pauses were found and how much time will go. **Show as markers** puts them on the timeline for review, **Remove markers** clears them.
+7. **Cut silence** first duplicates the sequence as a backup named "… (before cut)". Then it extracts each pause, right to left, on all tracks at once. After every cut it checks that the timeline shrank by exactly the expected length, and stops if it didn't.
+
+### Loudness balance
+
+Select audio clips with the mouse, or set In/Out, and press **Balance volume**. Each selected Speech track gets one gain change that brings it to the voice level (−18 LUFS by default); each Game track goes the set number of dB below it (10 dB by default). Loudness is measured with `ffmpeg ebur128` on Premiere's own render of that track, over just the selected clips (or the part inside In/Out).
+
+Premiere doesn't let scripts change **Audio Gain**, so the change goes into each clip's **Volume → Level**, which sounds the same. Level can't go above +15 dB, and clips with volume keyframes are skipped so the keyframes aren't lost.
 
 The UI is in English or Russian, following Premiere's language.
 
@@ -38,18 +46,22 @@ The script symlinks the folder into `~/Library/Application Support/Adobe/CEP/ext
 
 | Setting | Default | Meaning |
 |---|---|---|
-| Detect silence on | A1 + A3 | Tracks to listen to. A pause counts only when all of them are quiet. |
-| Threshold | −40 dB | Anything quieter than this counts as silence. Try −45…−50 if quiet words get cut. **Auto** measures the noise floor and speech level of the checked tracks, sets the threshold between them (−70…−20 dB), then runs the analysis. |
+| Track role | A1, A3 Speech; A2 Game | Speech: listened to for silence. Game: its loud moments are protected. Ignore: not listened to, still cut. |
+| Track threshold | Speech −40 dB, Game −10 dB | Speech: quieter than this is silence (try −45…−50 if quiet words get cut). Game: louder than this is protected. **Auto thresholds + analyze** measures each track: Speech goes between noise floor and speech level (−70…−20 dB), Game goes to the loudest 5% (−40…−3 dB). |
+| Pace | Standard | Sets the next three values at once. Soft: 1.5 s / 300 ms / 0.2 s. Standard: 1 s / 200 ms / 0.3 s. Tight: 0.5 s / 120 ms / 0.4 s. |
 | Min pause | 1 s | Shorter pauses are left alone. |
 | Padding | 200 ms | Space kept before and after speech so words aren't clipped. |
+| Join sounds shorter than | 0.3 s | A sound this short between two pauses is cut together with them. 0 turns it off. |
+| Only between In/Out | off | Cut only between the sequence In and Out marks. |
 
 ## Limitations
 
 - Every track is cut, including the ones that weren't analyzed. That keeps sync, but game sound inside a pause goes too.
 - Each cut is its own undo step. The backup sequence is the easy way back.
-- Sequence In/Out points are cleared by the cut.
+- Sequence In/Out points and Clean Cut markers are cleared by the cut.
 - Cutting goes through Premiere's undocumented QE DOM (`setInOutPoints` + `extract`). A Premiere update could break it. A port to UXP will be possible once its split API leaves beta.
 - Locked tracks are refused, because they would drift out of sync.
+- Balancing renders the whole sequence once per track, even for a short selection.
 
 ## Development
 
@@ -59,9 +71,9 @@ node --test planner.test.js
 
 | File | Purpose |
 |---|---|
-| `host.jsx` | ExtendScript: track info, analysis render, backup, cuts |
+| `host.jsx` | ExtendScript: track info, analysis render, markers, backup, cuts, clip levels |
 | `main.js`, `index.html` | Panel UI, ffmpeg call, translations |
-| `planner.js` | Pure logic: parse silencedetect output, plan frame ranges |
+| `planner.js` | Pure logic: parse silencedetect output, combine tracks, plan frame ranges, suggest thresholds, loudness math |
 
 ## Credits
 
@@ -79,15 +91,23 @@ MIT, see [LICENSE](LICENSE).
 
 Бесплатная панель для Adobe Premiere Pro с открытым кодом. Находит тишину на выбранных аудиодорожках и вырезает её из всего таймлайна, видео и все дорожки остаются синхронными.
 
-Сделана для записей игр с друзьями в Discord, где звук разложен на три дорожки: микрофон, игра, Discord. Clean Cut слушает только микрофон и Discord, поэтому пауза вырезается, когда молчат все, даже если в игре что-то шумит.
+Сделана для записей игр с друзьями в Discord, где звук разложен на три дорожки: микрофон, игра, Discord. Clean Cut слушает микрофон и Discord, у каждой дорожки свой порог, поэтому пауза вырезается, только когда молчат все. Громкие моменты игры (взрывы, катсцены) внутри паузы остаются.
 
 ### Как работает
 
-1. Premiere рендерит отмеченные дорожки активной секвенции во временный WAV. Остальные дорожки на время рендера глушатся, потом включаются обратно.
-2. `ffmpeg silencedetect` ищет места тише порога и длиннее минимальной паузы.
-3. От каждой паузы с обеих сторон оставляется отступ, границы округляются до целых кадров.
-4. **Анализ** показывает, сколько пауз найдено и сколько времени уйдёт.
-5. **Вырезать тишину** сначала делает копию секвенции «… (до вырезки)». Потом вырезает паузы справа налево сразу на всех дорожках. После каждого выреза проверяет, что таймлайн укоротился ровно на нужную длину, иначе останавливается.
+1. У каждой аудиодорожки есть роль: **Речь**, **Игра** или **Не слушать**. Premiere рендерит каждую дорожку «Речь» и «Игра» в свой временный WAV, остальные на время рендера глушатся.
+2. `ffmpeg silencedetect` ищет тихие места на каждой дорожке с её порогом.
+3. Пауза — там, где тихо на всех дорожках «Речь». Моменты, где дорожка «Игра» громче своего порога, плюс по 0,5 с с каждой стороны, из пауз исключаются.
+4. Паузы короче минимальной отбрасываются. Короткий звук между двумя паузами (кашель, щелчок) склеивается с ними.
+5. От каждой паузы с обеих сторон оставляется отступ, границы округляются до целых кадров.
+6. **Анализ** показывает, сколько пауз найдено и сколько времени уйдёт. **Показать маркерами** ставит их на таймлайн для проверки, **Убрать маркеры** их снимает.
+7. **Вырезать тишину** сначала делает копию секвенции «… (до вырезки)». Потом вырезает паузы справа налево сразу на всех дорожках. После каждого выреза проверяет, что таймлайн укоротился ровно на нужную длину, иначе останавливается.
+
+### Баланс громкости
+
+Выдели аудиоклипы мышкой или поставь In/Out и нажми **Сбалансировать громкость**. Каждая выделенная дорожка «Речь» получает одну поправку, которая выводит её на уровень голоса (по умолчанию −18 LUFS). Дорожка «Игра» ставится на заданное число дБ тише (по умолчанию на 10 дБ). Громкость мерится через `ffmpeg ebur128` по рендеру этой дорожки из Premiere, только по выделенным клипам (или по части внутри In/Out).
+
+Менять **Audio Gain** скриптам Premiere не даёт, поэтому поправка пишется в **Volume → Level** каждого клипа — на слух то же самое. Level не поднимается выше +15 дБ, а клипы с ключевыми кадрами громкости пропускаются, чтобы ключи не стёрлись.
 
 Язык интерфейса — русский или английский, по языку Premiere.
 
@@ -109,15 +129,19 @@ cd clean-cut && ./install.sh
 
 | Настройка | По умолчанию | Что значит |
 |---|---|---|
-| Искать тишину на | A1 + A3 | Какие дорожки слушать. Пауза засчитывается, только когда молчат все. |
-| Порог | −40 дБ | Всё тише считается тишиной. Если режутся тихие слова, попробуй −45…−50. Кнопка **Авто** измеряет уровень шума и речи на отмеченных дорожках, ставит порог между ними (−70…−20 дБ) и сразу делает анализ. |
+| Роль дорожки | A1, A3 Речь; A2 Игра | Речь: слушается на тишину. Игра: её громкие моменты не режутся. Не слушать: не анализируется, но режется. |
+| Порог дорожки | Речь −40 дБ, Игра −10 дБ | Речь: тише — тишина (если режутся тихие слова, попробуй −45…−50). Игра: громче — не резать. **Авто-пороги + анализ** меряет каждую дорожку: для речи порог между шумом и голосом (−70…−20 дБ), для игры — самые громкие 5% (−40…−3 дБ). |
+| Темп | Стандарт | Ставит три следующих значения разом. Мягко: 1,5 с / 300 мс / 0,2 с. Стандарт: 1 с / 200 мс / 0,3 с. Плотно: 0,5 с / 120 мс / 0,4 с. |
 | Мин. пауза | 1 с | Паузы короче не трогаются. |
 | Отступ | 200 мс | Сколько «воздуха» оставить до и после речи. |
+| Склеивать звуки короче | 0,3 с | Такой короткий звук между двумя паузами вырезается вместе с ними. 0 — выключено. |
+| Только между In/Out | выкл. | Резать только между метками In и Out секвенции. |
 
 ### Ограничения
 
 - Режутся все дорожки, включая те, что не анализировались. Так сохраняется синхронность, но звук игры в паузах тоже уходит.
 - Каждый вырез — отдельный шаг отмены. Проще вернуться через копию секвенции.
-- Метки In/Out после вырезки сбрасываются.
+- Метки In/Out и маркеры Clean Cut после вырезки сбрасываются.
 - Вырезка идёт через недокументированный QE DOM Premiere. Обновление Premiere может её сломать.
 - Заблокированные дорожки не поддерживаются: они разъехались бы.
+- Для баланса весь таймлайн рендерится по разу на дорожку, даже если выделен короткий кусок.
