@@ -1,4 +1,4 @@
-/* global CSInterface, parseSilences, planCuts, totalFrames, suggestThreshold, suggestLoud, findPauses, parseLoudness, selectExpr, balanceDelta */
+/* global CSInterface, parseSilences, planCuts, totalFrames, suggestThreshold, suggestLoud, findPauses, clipSegments, loudPeak, selectExpr, balanceDelta */
 var cs = new CSInterface();
 var nodeRequire = window.cep_node ? window.cep_node.require : require;
 var fs = nodeRequire('fs'), os = nodeRequire('os'), path = nodeRequire('path'), cp = nodeRequire('child_process');
@@ -9,7 +9,7 @@ var STRINGS = {
     tracksHint: 'Speech: a pause is when all speech tracks are below their threshold. Game: moments louder than its threshold are never cut. All tracks get cut.',
     dbTitle: 'Speech: silence below, dB. Game: loud above, dB.',
     settings: 'Settings', preset: 'Pace', presetSoft: 'Soft', presetStandard: 'Standard', presetTight: 'Tight', presetCustom: 'Custom',
-    minPause: 'Min pause, s', padding: 'Padding, ms', minSpeech: 'Join sounds shorter than, s', scope: 'Only between In/Out',
+    minPause: 'Min pause, s', padding: 'Padding, ms', minSpeech: 'Join sounds shorter than, s', scope: 'Only between In/Out', keepJoins: 'Keep gaps and joins between clips',
     refresh: 'Refresh tracks', analyze: 'Analyze', auto: 'Auto thresholds + analyze',
     markers: 'Show as markers', clearMarkers: 'Remove markers', cut: 'Cut silence',
     measuring: 'Measuring {t}…', suggested: 'Thresholds, dB: {list}', exporting: 'Rendering {t}…', detecting: 'Detecting silence…',
@@ -25,11 +25,11 @@ var STRINGS = {
     NO_FRAME_FORMAT: 'Could not switch the timeline to frames.',
     IN_OUT_MISMATCH: 'In/out points did not land on the cut; stopped. The backup is intact.',
     NOT_SHRUNK: 'Timeline did not shrink as expected; stopped. The backup is intact.',
-    balanceTitle: 'Loudness balance', voice: 'Voice, LUFS', gameBelow: 'Game quieter by, dB', balance: 'Balance volume',
-    balanceHint: 'Select audio clips with the mouse or set In/Out. Speech tracks go to the voice level, Game below it. Changes Volume > Level; clips with volume keyframes are skipped.',
-    measuringLoud: 'Measuring loudness {t}…', applying: 'Applying gain…',
-    balanceLine: '{t}: {m} LUFS → {d} dB ({n} clips)', balanceSilent: '{t}: nothing to measure, skipped',
-    balanceDone: 'Done: {n} clips changed.', balanceClamped: 'Clips at the +15 dB limit: {n}.', balanceKeyframed: 'Skipped (keyframes or no Volume): {n}.',
+    balanceTitle: 'Loudness balance', voice: 'Voice peaks, dB', gameBelow: 'Game quieter by, dB', balance: 'Balance volume',
+    balanceHint: 'Select audio clips with the mouse or set In/Out. Loud speech peaks go to the voice level (−6 dB on the Premiere meter), Game below it. Adds Amplify for the gain and a Hard Limiter at −1 dB so nothing clips.',
+    measuringLoud: 'Measuring peaks {t}…', applying: 'Applying gain…',
+    balanceLine: '{t}: peaks {m} dB (max {x}) → {d} dB ({n} clips)', balanceSilent: '{t}: nothing to measure, skipped',
+    balanceDone: 'Done: {n} clips changed.', balanceClamped: 'Clips at the +48 dB Amplify limit: {n}.', balanceKeyframed: 'Skipped (Amplify keyframes or effects in a different order): {n}.',
     balanceInOut: 'Range: In/Out', balanceSelection: 'Range: selected clips',
     NO_SELECTION: 'Select audio clips or set In/Out first.'
   },
@@ -38,7 +38,7 @@ var STRINGS = {
     tracksHint: 'Речь: пауза — когда все речевые дорожки тише своего порога. Игра: моменты громче её порога не режутся. Режутся все дорожки.',
     dbTitle: 'Речь: тишина ниже, дБ. Игра: громко выше, дБ.',
     settings: 'Настройки', preset: 'Темп', presetSoft: 'Мягко', presetStandard: 'Стандарт', presetTight: 'Плотно', presetCustom: 'Своё',
-    minPause: 'Мин. пауза, с', padding: 'Отступ, мс', minSpeech: 'Склеивать звуки короче, с', scope: 'Только между In/Out',
+    minPause: 'Мин. пауза, с', padding: 'Отступ, мс', minSpeech: 'Склеивать звуки короче, с', scope: 'Только между In/Out', keepJoins: 'Не трогать промежутки и стыки между клипами',
     refresh: 'Обновить дорожки', analyze: 'Анализ', auto: 'Авто-пороги + анализ',
     markers: 'Показать маркерами', clearMarkers: 'Убрать маркеры', cut: 'Вырезать тишину',
     measuring: 'Измеряю {t}…', suggested: 'Пороги, дБ: {list}', exporting: 'Рендер {t}…', detecting: 'Поиск тишины…',
@@ -54,11 +54,11 @@ var STRINGS = {
     NO_FRAME_FORMAT: 'Не удалось переключить таймлайн в кадры.',
     IN_OUT_MISMATCH: 'Точки in/out не встали на вырез, остановлено. Бэкап цел.',
     NOT_SHRUNK: 'Таймлайн укоротился не так, как ожидалось, остановлено. Бэкап цел.',
-    balanceTitle: 'Баланс громкости', voice: 'Голос, LUFS', gameBelow: 'Игра тише на, дБ', balance: 'Сбалансировать громкость',
-    balanceHint: 'Выдели аудиоклипы мышкой или поставь In/Out. Дорожки «Речь» выводятся на уровень голоса, «Игра» — ниже. Меняется Volume → Level, клипы с ключевыми кадрами громкости пропускаются.',
-    measuringLoud: 'Измеряю громкость {t}…', applying: 'Применяю…',
-    balanceLine: '{t}: {m} LUFS → {d} дБ ({n} клипов)', balanceSilent: '{t}: нечего мерить, пропущено',
-    balanceDone: 'Готово: изменено клипов: {n}.', balanceClamped: 'Упёрлись в предел +15 дБ: {n}.', balanceKeyframed: 'Пропущено (ключевые кадры или нет Volume): {n}.',
+    balanceTitle: 'Баланс громкости', voice: 'Пики голоса, дБ', gameBelow: 'Игра тише на, дБ', balance: 'Сбалансировать громкость',
+    balanceHint: 'Выдели аудиоклипы мышкой или поставь In/Out. Громкая речь выводится на уровень пиков голоса (−6 дБ на индикаторе Premiere), «Игра» — ниже. На клипы вешается Amplify с поправкой и Hard Limiter на −1 дБ, чтобы ничего не хрипело.',
+    measuringLoud: 'Измеряю пики {t}…', applying: 'Применяю…',
+    balanceLine: '{t}: пики {m} дБ (макс. {x}) → {d} дБ ({n} клипов)', balanceSilent: '{t}: нечего мерить, пропущено',
+    balanceDone: 'Готово: изменено клипов: {n}.', balanceClamped: 'Упёрлись в предел Amplify +48 дБ: {n}.', balanceKeyframed: 'Пропущено (ключевые кадры Amplify или эффекты в другом порядке): {n}.',
     balanceInOut: 'Диапазон: In/Out', balanceSelection: 'Диапазон: выделенные клипы',
     NO_SELECTION: 'Сначала выдели аудиоклипы или поставь In/Out.'
   }
@@ -72,6 +72,7 @@ var PRESETS = {
 };
 var DEFAULT_DB = { speech: -40, game: -10 };
 var PROTECT_MARGIN = 0.5; // seconds kept around a loud game moment
+var LIMITER_CEILING = -1; // dB, Hard Limiter put after the balancing gain
 
 function $(id) { return document.getElementById(id); }
 function fmt(s, vars) { return s.replace(/\{(\w+)\}/g, function (_, k) { return vars[k]; }); }
@@ -243,7 +244,8 @@ function analyze(auto) {
     var range = $('scope').checked && hasRange()
       ? { start: info.inSec !== null ? info.inSec : 0, end: info.outSec !== null ? Math.min(info.outSec, info.endSec) : info.endSec }
       : null;
-    var pauses = findPauses(results, { endSec: info.endSec, minPause: s.min, minSpeech: s.speech, range: range, protectMargin: PROTECT_MARGIN });
+    var segments = $('keepJoins').checked ? clipSegments(info.spans) : null;
+    var pauses = findPauses(results, { endSec: info.endSec, minPause: s.min, minSpeech: s.speech, range: range, protectMargin: PROTECT_MARGIN, segments: segments });
     var cuts = planCuts(pauses, { padding: s.pad / 1000, fps: info.fps });
     var prefix = auto ? fmt(L.suggested, { list: suggested.join(', ') }) + '\n' : '';
     if (!cuts.length) return say(prefix + L.none);
@@ -293,22 +295,23 @@ function cut() {
 function signed(x) { return (x > 0 ? '+' : '') + x; }
 
 function readBalance() {
-  var b = { voice: num($('voice').value, -40, -6, -18), gameBelow: num($('gameBelow').value, 0, 40, 10) };
+  var b = { voice: num($('voice').value, -30, -1, -6), gameBelow: num($('gameBelow').value, 0, 40, 10) };
   $('voice').value = b.voice; $('gameBelow').value = b.gameBelow;
-  store.set('balance', b);
+  store.set('balancePeak', b);
   return b;
 }
 
-// Renders one track and measures integrated loudness of just the given time ranges.
+// Renders one track and measures the loud peaks of just the given time ranges.
 function measureTrack(ffmpeg, t, ranges) {
   var wav = path.join(os.tmpdir(), 'clean-cut-loud-' + Date.now() + '-' + t + '.wav');
   var cleanup = function () { try { fs.unlinkSync(wav); } catch (e) {} };
   say(fmt(L.measuringLoud, { t: trackLabel(t) }));
   // shortcut: renders the whole sequence even for a short selection; render only In/Out if it gets slow.
   return host('cc_exportAnalysis([' + t + '],' + lit(wav) + ')').then(function () {
-    return run(ffmpeg, ['-hide_banner', '-nostats', '-i', wav, '-af',
-      "aselect='" + selectExpr(ranges) + "',ebur128=framelog=quiet", '-f', 'null', '-'], { maxBuffer: 64 * 1024 * 1024 });
-  }).then(function (r) { cleanup(); return parseLoudness(r.err); }, function (e) { cleanup(); throw e; });
+    // Stereo 16 kHz s16: about 115 MB for 30 minutes, small enough to keep in memory.
+    return run(ffmpeg, ['-hide_banner', '-nostats', '-v', 'error', '-i', wav, '-af', "aselect='" + selectExpr(ranges) + "'",
+      '-ac', '2', '-ar', '16000', '-f', 's16le', '-'], { encoding: 'buffer', maxBuffer: 512 * 1024 * 1024 });
+  }).then(function (r) { cleanup(); return loudPeak(r.out, 16000 * 2); }, function (e) { cleanup(); throw e; });
 }
 
 function balance() {
@@ -320,13 +323,12 @@ function balance() {
     lines.push(res.mode === 'inout' ? L.balanceInOut : L.balanceSelection);
     var chain = Promise.resolve();
     res.tracks.forEach(function (tr) {
-      skipped += tr.keyframed;
       var role = roles[tr.track] ? roles[tr.track].role : 'off';
       if (role === 'off' || !tr.ranges.length) { skipped += tr.clips.length; return; }
-      chain = chain.then(function () { return measureTrack(ffmpeg, tr.track, tr.ranges); }).then(function (lufs) {
-        if (lufs === null) { lines.push(fmt(L.balanceSilent, { t: trackLabel(tr.track) })); return; }
-        var d = balanceDelta(lufs, role, b);
-        lines.push(fmt(L.balanceLine, { t: trackLabel(tr.track), m: lufs, d: signed(d), n: tr.clips.length }));
+      chain = chain.then(function () { return measureTrack(ffmpeg, tr.track, tr.ranges); }).then(function (peak) {
+        if (peak === null) { lines.push(fmt(L.balanceSilent, { t: trackLabel(tr.track) })); return; }
+        var d = balanceDelta(peak.loud, role, b);
+        lines.push(fmt(L.balanceLine, { t: trackLabel(tr.track), m: peak.loud, x: peak.max, d: signed(d), n: tr.clips.length }));
         tr.clips.forEach(function (c) { changes.push([tr.track, c, d]); });
       });
     });
@@ -334,7 +336,7 @@ function balance() {
   }).then(function () {
     if (!changes.length) return { applied: 0, clamped: 0, skipped: 0 };
     say(L.applying);
-    return host('cc_applyGain(' + JSON.stringify(changes) + ',' + lit(targets.id) + ')');
+    return host('cc_applyGain(' + JSON.stringify(changes) + ',' + lit(targets.id) + ',' + LIMITER_CEILING + ')');
   }).then(function (res) {
     lines.push(fmt(L.balanceDone, { n: res.applied }));
     if (res.clamped) lines.push(fmt(L.balanceClamped, { n: res.clamped }));
@@ -355,10 +357,12 @@ $('preset').onchange = function () {
   invalidate(); sync();
 };
 ['min', 'pad', 'speech'].forEach(function (id) { $(id).onchange = function () { matchPreset(); invalidate(); sync(); }; });
-var savedBalance = store.get('balance', { voice: -18, gameBelow: 10 });
+var savedBalance = store.get('balancePeak', { voice: -6, gameBelow: 10 });
 $('voice').value = savedBalance.voice; $('gameBelow').value = savedBalance.gameBelow;
 $('scope').checked = store.get('scope', false);
 $('scope').onchange = function () { store.set('scope', $('scope').checked); invalidate(); sync(); };
+$('keepJoins').checked = store.get('keepJoins', false);
+$('keepJoins').onchange = function () { store.set('keepJoins', $('keepJoins').checked); invalidate(); sync(); };
 
 var ACTIONS = ['refresh', 'analyze', 'auto', 'markers', 'clearMarkers', 'cut', 'balance'];
 function sync() { $('markers').disabled = !plan; $('cut').disabled = !plan; }

@@ -18,9 +18,11 @@ It was made for recordings of games played with friends over Discord, with three
 
 ### Loudness balance
 
-Select audio clips with the mouse, or set In/Out, and press **Balance volume**. Each selected Speech track gets one gain change that brings it to the voice level (−18 LUFS by default); each Game track goes the set number of dB below it (10 dB by default). Loudness is measured with `ffmpeg ebur128` on Premiere's own render of that track, over just the selected clips (or the part inside In/Out).
+Select audio clips with the mouse, or set In/Out, and press **Balance volume**. Each selected Speech track gets one gain change that brings its loud speech peaks to −6 dB on Premiere's meter; each Game track goes the set number of dB below that (10 dB by default). Both numbers are in the panel.
 
-Premiere doesn't let scripts change **Audio Gain**, so the change goes into each clip's **Volume → Level**, which sounds the same. Level can't go above +15 dB, and clips with volume keyframes are skipped so the keyframes aren't lost.
+Peaks are measured with ffmpeg on Premiere's own render of that track, over just the selected clips (or the part inside In/Out). "Loud speech" is the level that 95% of the loud moments stay under, so one scream doesn't hold the whole track down.
+
+Premiere doesn't let scripts set **Audio Gain**, and Volume → Level stops at +15 dB. So Clean Cut adds an **Amplify** effect to each clip for the gain (−96…+48 dB) and a **Hard Limiter** at −1 dB after it, so rare loud moments don't clip. Running the balance again adjusts the same Amplify instead of stacking new ones.
 
 The UI is in English or Russian, following Premiere's language.
 
@@ -53,6 +55,7 @@ The script symlinks the folder into `~/Library/Application Support/Adobe/CEP/ext
 | Padding | 200 ms | Space kept before and after speech so words aren't clipped. |
 | Join sounds shorter than | 0.3 s | A sound this short between two pauses is cut together with them. 0 turns it off. |
 | Only between In/Out | off | Cut only between the sequence In and Out marks. |
+| Keep gaps and joins between clips | off | Pauses are cut only inside clips: empty space between clips stays, and a cut never spans the join of two clips, so separate recordings don't get glued together. |
 
 ## Limitations
 
@@ -62,6 +65,7 @@ The script symlinks the folder into `~/Library/Application Support/Adobe/CEP/ext
 - Cutting goes through Premiere's undocumented QE DOM (`setInOutPoints` + `extract`). A Premiere update could break it. A port to UXP will be possible once its split API leaves beta.
 - Locked tracks are refused, because they would drift out of sync.
 - Balancing renders the whole sequence once per track, even for a short selection.
+- Amplify and Hard Limiter are added through the undocumented QE DOM; their parameter scales were calibrated on Premiere 26.5.
 
 ## Development
 
@@ -71,9 +75,9 @@ node --test planner.test.js
 
 | File | Purpose |
 |---|---|
-| `host.jsx` | ExtendScript: track info, analysis render, markers, backup, cuts, clip levels |
+| `host.jsx` | ExtendScript: track info, analysis render, markers, backup, cuts, Amplify/Limiter |
 | `main.js`, `index.html` | Panel UI, ffmpeg call, translations |
-| `planner.js` | Pure logic: parse silencedetect output, combine tracks, plan frame ranges, suggest thresholds, loudness math |
+| `planner.js` | Pure logic: parse silencedetect output, combine tracks, plan frame ranges, suggest thresholds, peak math |
 
 ## Credits
 
@@ -105,9 +109,11 @@ MIT, see [LICENSE](LICENSE).
 
 ### Баланс громкости
 
-Выдели аудиоклипы мышкой или поставь In/Out и нажми **Сбалансировать громкость**. Каждая выделенная дорожка «Речь» получает одну поправку, которая выводит её на уровень голоса (по умолчанию −18 LUFS). Дорожка «Игра» ставится на заданное число дБ тише (по умолчанию на 10 дБ). Громкость мерится через `ffmpeg ebur128` по рендеру этой дорожки из Premiere, только по выделенным клипам (или по части внутри In/Out).
+Выдели аудиоклипы мышкой или поставь In/Out и нажми **Сбалансировать громкость**. Каждая выделенная дорожка «Речь» получает одну поправку, которая выводит пики громкой речи на −6 дБ индикатора Premiere. Дорожка «Игра» ставится на заданное число дБ ниже (по умолчанию на 10). Обе цифры меняются в панели.
 
-Менять **Audio Gain** скриптам Premiere не даёт, поэтому поправка пишется в **Volume → Level** каждого клипа — на слух то же самое. Level не поднимается выше +15 дБ, а клипы с ключевыми кадрами громкости пропускаются, чтобы ключи не стёрлись.
+Пики мерятся через ffmpeg по рендеру этой дорожки из Premiere, только по выделенным клипам (или по части внутри In/Out). «Громкая речь» — уровень, ниже которого остаются 95% громких моментов, поэтому один крик не держит всю дорожку тихой.
+
+Менять **Audio Gain** скриптам Premiere не даёт, а Volume → Level поднимает максимум на +15 дБ. Поэтому Clean Cut вешает на каждый клип эффект **Amplify** с поправкой (−96…+48 дБ) и после него **Hard Limiter** на −1 дБ, чтобы редкие громкие моменты не хрипели. Повторный баланс подправляет тот же Amplify, а не добавляет новый.
 
 Язык интерфейса — русский или английский, по языку Premiere.
 
@@ -136,6 +142,7 @@ cd clean-cut && ./install.sh
 | Отступ | 200 мс | Сколько «воздуха» оставить до и после речи. |
 | Склеивать звуки короче | 0,3 с | Такой короткий звук между двумя паузами вырезается вместе с ними. 0 — выключено. |
 | Только между In/Out | выкл. | Резать только между метками In и Out секвенции. |
+| Не трогать промежутки и стыки между клипами | выкл. | Паузы режутся только внутри клипов: пустое место между клипами остаётся, и вырез никогда не захватывает стык двух клипов, поэтому отдельные записи не слипаются. |
 
 ### Ограничения
 
@@ -145,3 +152,4 @@ cd clean-cut && ./install.sh
 - Вырезка идёт через недокументированный QE DOM Premiere. Обновление Premiere может её сломать.
 - Заблокированные дорожки не поддерживаются: они разъехались бы.
 - Для баланса весь таймлайн рендерится по разу на дорожку, даже если выделен короткий кусок.
+- Amplify и Hard Limiter вешаются через недокументированный QE DOM; шкалы их параметров откалиброваны на Premiere 26.5.

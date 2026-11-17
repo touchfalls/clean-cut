@@ -24,9 +24,12 @@ function cc_info() {
   for (var j = 0; j < all.length; j++) if (all[j].isLocked()) locked = true;
   // Unset In/Out read back as negative times.
   var inSec = seq.getInPointAsTime().seconds, outSec = seq.getOutPointAsTime().seconds;
+  var spans = []; // every clip on every track, for "keep joins between clips"
+  for (var k = 0; k < all.length; k++)
+    for (var c = 0; c < all[k].clips.numItems; c++) spans.push('[' + all[k].clips[c].start.seconds + ',' + all[k].clips[c].end.seconds + ']');
   return '{"id":"' + cc_esc(seq.sequenceID) + '","name":"' + cc_esc(seq.name) + '","fps":' + (CC_TPS / cc_tpf(seq)) +
     ',"endSec":' + (Number(seq.end) / CC_TPS) + ',"tracks":[' + names.join(',') + '],"locked":' + locked +
-    ',"inSec":' + (inSec >= 0 ? inSec : 'null') + ',"outSec":' + (outSec >= 0 ? outSec : 'null') + '}';
+    ',"inSec":' + (inSec >= 0 ? inSec : 'null') + ',"outSec":' + (outSec >= 0 ? outSec : 'null') + ',"spans":[' + spans.join(',') + ']}';
 }
 
 var CC_MARKER = 'Clean Cut';
@@ -133,28 +136,32 @@ function cc_applyCuts(cuts, expectedId) {
   return '{"applied":' + applied + '}';
 }
 
-// --- Loudness balancing through each clip's Volume > Level (true Audio Gain isn't scriptable) ---
+// --- Loudness balancing: an Amplify effect for the gain, then a Hard Limiter as a ceiling ---
+// True Audio Gain can't be set from scripts (QE staticClipGain is read-only), and Volume > Level stops at +15 dB.
+// Effects are added through the undocumented QE DOM. Parameter scales were calibrated by rendering in 26.5:
+//   Amplify Left/Right: dB = (v - 2/3) * 144  (-96..+48 dB)
+//   Hard Limiter Maximum Amplitude: dB = (v - 1) * 100
 
-function cc_dbToLevel(db) { return Math.pow(10, (db - 15) / 20); } // Level stores 1.0 = +15 dB
-function cc_levelToDb(v) { return 20 * Math.log(v) / Math.LN10 + 15; }
+var CC_AMPLIFY = 'f14fee7d-fe5f-4202-b790-f53209e56411'; // matchNames don't depend on the UI language
+var CC_LIMITER = 'e0b23f05-f1a7-4ef7-9b50-7ec3e3002058';
 
-// The Volume > Level property of an audio clip, or null.
-function cc_levelProp(clip) {
+function cc_component(clip, matchName) {
   var comps = clip.components;
-  for (var c = 0; c < comps.numItems; c++) {
-    var props = comps[c].properties;
-    for (var p = 0; p < props.numItems; p++) {
-      var n = String(props[p].displayName);
-      if (n === 'Level' || n === '\u0423\u0440\u043e\u0432\u0435\u043d\u044c') return props[p]; // "Уровень" in Russian UI
-    }
-  }
-  // Other UI languages: the fixed Volume effect comes first, Level is its second property.
-  try { var v = Number(comps[0].properties[1].getValue()); if (v >= 0 && v <= 1.0001) return comps[0].properties[1]; } catch (e) {}
+  for (var c = 0; c < comps.numItems; c++) if (String(comps[c].matchName) === matchName) return comps[c];
   return null;
 }
 
+// Component on the clip, adding the effect through QE when it's missing.
+function cc_ensureEffect(clip, qeItem, matchName, name) {
+  var comp = cc_component(clip, matchName);
+  if (comp) return comp;
+  var fx = qe.project.getAudioEffectByName(name);
+  if (!fx || !qeItem || !qeItem.addAudioEffect(fx)) return null;
+  return cc_component(clip, matchName);
+}
+
 // Audio clips to balance: the mouse selection if any, else clips overlapping In/Out.
-// Returns {mode, tracks: [{track, ranges: [[start, end]], clips: [index...], keyframed}]} in seconds;
+// Returns {mode, tracks: [{track, ranges: [[start, end]], clips: [index...]}]} in seconds;
 // with In/Out only the part inside is measured.
 function cc_balanceTargets() {
   var seq = app.project.activeSequence;
@@ -167,16 +174,14 @@ function cc_balanceTargets() {
   var pick = function (useSelection) {
     var out = [];
     for (var t = 0; t < seq.audioTracks.numTracks; t++) {
-      var clips = seq.audioTracks[t].clips, ranges = [], idx = [], keyframed = 0;
+      var clips = seq.audioTracks[t].clips, ranges = [], idx = [];
       for (var c = 0; c < clips.numItems; c++) {
         var clip = clips[c], s = clip.start.seconds, e = clip.end.seconds;
         if (useSelection ? !clip.isSelected() : (e <= inSec || s >= outSec)) continue;
         if (!useSelection) { s = Math.max(s, inSec); e = Math.min(e, outSec); }
-        var prop = cc_levelProp(clip);
-        if (!prop || prop.isTimeVarying()) { keyframed++; continue; }
         ranges.push('[' + s + ',' + e + ']'); idx.push(c);
       }
-      if (ranges.length || keyframed) out.push('{"track":' + t + ',"ranges":[' + ranges.join(',') + '],"clips":[' + idx.join(',') + '],"keyframed":' + keyframed + '}');
+      if (ranges.length) out.push('{"track":' + t + ',"ranges":[' + ranges.join(',') + '],"clips":[' + idx.join(',') + ']}');
     }
     return out;
   };
@@ -186,19 +191,35 @@ function cc_balanceTargets() {
   return '{"id":"' + cc_esc(seq.sequenceID) + '","mode":"' + mode + '","tracks":[' + found.join(',') + ']}';
 }
 
-// changes: [[track, clipIndex, deltaDb], ...]. Level tops out at +15 dB, so bigger boosts are clamped.
-function cc_applyGain(changes, expectedId) {
+// changes: [[track, clipIndex, deltaDb], ...]; deltas add to the clip's existing Amplify gain.
+// ceilingDb: Hard Limiter ceiling put after Amplify on every changed clip.
+function cc_applyGain(changes, expectedId, ceilingDb) {
   var seq = app.project.activeSequence;
   if (!seq || String(seq.sequenceID) !== expectedId) return cc_err('SEQUENCE_CHANGED');
-  var applied = 0, clamped = 0, skipped = 0;
+  app.enableQE();
+  var q = qe.project.getActiveSequence();
+  if (!q) return cc_err('NO_QE');
+  var qeByTrack = {}, applied = 0, clamped = 0, skipped = 0;
   for (var i = 0; i < changes.length; i++) {
-    var clip = seq.audioTracks[changes[i][0]].clips[changes[i][1]];
-    var prop = clip && cc_levelProp(clip);
-    var v = prop ? Number(prop.getValue()) : 0;
-    if (!prop || prop.isTimeVarying() || !(v > 0) || v > 1.0001) { skipped++; continue; }
-    var db = cc_levelToDb(v) + changes[i][2];
-    if (db > 15) { db = 15; clamped++; }
-    prop.setValue(cc_dbToLevel(db), true);
+    var t = changes[i][0], clip = seq.audioTracks[t].clips[changes[i][1]];
+    if (!qeByTrack[t]) { // QE items include gaps, so DOM clips are matched by start time
+      var map = {}, qt = q.getAudioTrackAt(t);
+      for (var k = 0; k < qt.numItems; k++) { var it = qt.getItemAt(k); if (it.type === 'Clip') map[String(it.start.ticks)] = it; }
+      qeByTrack[t] = map;
+    }
+    var qeItem = qeByTrack[t][String(clip.start.ticks)];
+    // shortcut: Amplify added after an existing limiter would sit behind it; such clips are skipped.
+    if (cc_component(clip, CC_LIMITER) && !cc_component(clip, CC_AMPLIFY)) { skipped++; continue; }
+    var amp = cc_ensureEffect(clip, qeItem, CC_AMPLIFY, 'Amplify');
+    if (!amp || amp.properties.numItems < 5 || amp.properties[3].isTimeVarying()) { skipped++; continue; }
+    var db = (Number(amp.properties[3].getValue()) - 2 / 3) * 144 + changes[i][2];
+    if (db > 48) { db = 48; clamped++; }
+    if (db < -96) db = -96;
+    var v = 2 / 3 + db / 144;
+    amp.properties[3].setValue(v, true); // Left; Link Sliders is on, Right is set too to be sure
+    amp.properties[4].setValue(v, true);
+    var lim = cc_ensureEffect(clip, qeItem, CC_LIMITER, 'Hard Limiter');
+    if (lim) { lim.properties[0].setValue(false, true); lim.properties[1].setValue(1 + ceilingDb / 100, true); }
     applied++;
   }
   return '{"applied":' + applied + ',"clamped":' + clamped + ',"skipped":' + skipped + '}';

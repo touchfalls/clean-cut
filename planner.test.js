@@ -126,14 +126,17 @@ test('loud threshold picks the loudest moments', () => {
   assert.ok(t > -25 && t <= -6, `got ${t}`);
 });
 
-const { parseLoudness, selectExpr, balanceDelta } = require('./planner.js');
+const { loudPeak, selectExpr, balanceDelta } = require('./planner.js');
 
-test('parses integrated loudness, silence -> null', () => {
-  const summary = (i) => `[Parsed_ebur128_1 @ 0x1] Summary:\n\n  Integrated loudness:\n    I:         ${i} LUFS\n    Threshold: -31.8 LUFS\n`;
-  assert.strictEqual(parseLoudness(summary('-21.8')), -21.8);
-  assert.strictEqual(parseLoudness(summary('-70.0')), null);
-  assert.strictEqual(parseLoudness(summary('-inf')), null);
-  assert.strictEqual(parseLoudness('garbage'), null);
+test('loud peak ignores one spike and the silence', () => {
+  // 6 s of speech peaking at -30 dB, 0.1 s scream at -10 dB, 4 s of silence
+  const r = loudPeak(pcm([[6, dB(-30), 'sine'], [0.1, dB(-10), 'sine'], [4, 0, 'noise']]), 8000);
+  assert.ok(Math.abs(r.loud - -30) < 1, `loud ${r.loud}`);
+  assert.ok(Math.abs(r.max - -10) < 1, `max ${r.max}`);
+});
+
+test('silence -> null', () => {
+  assert.strictEqual(loudPeak(pcm([[2, 0, 'noise']]), 8000), null);
 });
 
 test('aselect expression', () => {
@@ -141,8 +144,28 @@ test('aselect expression', () => {
 });
 
 test('speech goes to voice target, game sits below it', () => {
-  const o = { voice: -18, gameBelow: 10 };
-  assert.strictEqual(balanceDelta(-24.33, 'speech', o), 6.3);
-  assert.strictEqual(balanceDelta(-15, 'speech', o), -3);
-  assert.strictEqual(balanceDelta(-20, 'game', o), -8);
+  const o = { voice: -6, gameBelow: 10 };
+  assert.strictEqual(balanceDelta(-30.33, 'speech', o), 24.3);
+  assert.strictEqual(balanceDelta(-3, 'speech', o), -3);
+  assert.strictEqual(balanceDelta(-10, 'game', o), -6);
+});
+
+const { clipSegments } = require('./planner.js');
+
+test('clip segments split at every edge and skip gaps', () => {
+  // A1: [0,10] [10,20]; gap 20..25; [25,30]; V1 has an edit at 5
+  assert.deepStrictEqual(clipSegments([[0, 10], [10, 20], [25, 30], [0, 5], [5, 20]]), iv([0, 5], [5, 10], [10, 20], [25, 30]));
+});
+
+test('kept joins: pauses stop at clip edges and never cut gaps', () => {
+  const segments = clipSegments([[0, 10], [10, 20], [25, 40]]);
+  const tracks = [{ role: 'speech', silences: iv([7, 14], [18, 28], [30, 31.1], [31.3, 34]) }];
+  // 7..14 splits at the join; 18..28 loses the 20..25 gap (and 25..28 stays); 30..31.1 + 31.3..34 still join
+  assert.deepStrictEqual(findPauses(tracks, { ...base, endSec: 40, segments }), iv([7, 10], [10, 14], [18, 20], [25, 28], [30, 34]));
+});
+
+test('short sound across a join is not merged', () => {
+  const segments = clipSegments([[0, 10], [10, 20]]);
+  const tracks = [{ role: 'speech', silences: iv([5, 9.9], [10.1, 15]) }];
+  assert.deepStrictEqual(findPauses(tracks, { ...base, segments }), iv([5, 9.9], [10.1, 15]));
 });
